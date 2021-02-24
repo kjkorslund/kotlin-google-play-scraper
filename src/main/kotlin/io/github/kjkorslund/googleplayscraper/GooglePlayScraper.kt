@@ -4,18 +4,35 @@ import io.github.kjkorslund.googleplayscraper.model.App
 import io.github.kjkorslund.googleplayscraper.model.deserialize
 import io.ktor.client.*
 import io.ktor.client.request.*
-import io.ktor.client.statement.*
+import io.ktor.http.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
-fun main(): Unit { // this: CoroutineScope
+fun main() { // this: CoroutineScope
     val scraper = GooglePlayScraper(HttpClient())
-    val data = runBlocking { scraper.scrape("com.google.android.apps.translate", "en", "us") }
-        .mapValues { Json.parseToJsonElement(it.value) }
+    val rawData = measureTimedResultMillis {
+        runBlocking {
+            scraper.scrapeApp("com.google.android.apps.translate", "en", "us")
+        }
+    }.record {
+        println("Scrape time (ms): $it")
+    }
 //        .also(::println)
-    val app = App.deserialize(data)
+
+    val jsonData = measureTimedResultMillis {
+        rawData.mapValues { Json.parseToJsonElement(it.value) }
+    }.record {
+        println("Json parse time (ms): $it")
+    }
 //        .also(::println)
+
+    val app = measureTimedResultMillis {
+        App.deserialize(jsonData)
+    }.record {
+        println("App deserialize time (ms): $it")
+    }
+
     println(Json{ prettyPrint=true }.encodeToString(app))
 }
 
@@ -27,28 +44,34 @@ private val REGEX_KEY = Regex("""key:\s*'([\s\S]*?)'""")
 private val REGEX_DATA = Regex("""data:\s*(\[[\s\S]*\])\s*,\s*sideChannel""")
 
 class GooglePlayScraper(private val client: HttpClient) {
-    fun testScrape(): Unit {
-        val results = runBlocking { scrape("com.google.android.apps.translate", "en", "us") }
-        println(results.keys)
-        println(results.size)
-    }
+    suspend fun scrapeApp(id: String, lang: String, country: String): Map<String, String> {
+        val url = URLBuilder(PLAYSTORE_BASE_URL).apply {
+            parameters["id"] = id
+            parameters["hl"] = lang
+            parameters["gl"] = country
+        }.build()
+//            .also(::println)
 
-    suspend fun scrape(id: String, lang: String, country: String): Map<String, String> {
-        val url = "$PLAYSTORE_BASE_URL?id=$id&hl=$lang&gl=$country"
-        println(url)
+        val text = measureTimedResultMillis {
+            client.get<String>(url)
+        }.record {
+            println("HTTP request time (ms): $it")
+        }
+//            .also(::println)
 
-        val response: HttpResponse = client.get(url)
-        val text = response.readText()
-//        println(text)
-        return REGEX_AF_INITDATACALLBACK_PARAM.findAll(text)
-            .map {
-                val key = REGEX_KEY.find(it.value)?.groupValues?.get(1)
-                val data = REGEX_DATA.find(it.value)?.groupValues?.get(1)
-                if (key != null && data != null) {
-                    key to data
-                } else null
-            }
-            .filterNotNull()
-            .toMap()
+        return measureTimedResultMillis {
+            REGEX_AF_INITDATACALLBACK_PARAM.findAll(text)
+                .map {
+                    val key = REGEX_KEY.find(it.value)?.groupValues?.get(1)
+                    val data = REGEX_DATA.find(it.value)?.groupValues?.get(1)
+                    if (key != null && data != null) {
+                        key to data
+                    } else null
+                }
+                .filterNotNull()
+                .toMap()
+        }.record {
+            println("HTTP Response parse time (ms): $it")
+        }
     }
 }
